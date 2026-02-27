@@ -1,6 +1,23 @@
+import { CSSProperties } from 'react'
 import { Check, X, Star, ExternalLink } from 'lucide-react'
 
-export default function IdeaCard({ idea, onUpdateStatus, style }) {
+interface Idea {
+  id: number
+  title: string
+  summary: string
+  source_url: string
+  score: number
+  target_audience: string
+  created_at: string
+}
+
+interface Props {
+  idea: Idea
+  onUpdateStatus: (id: number, status: string) => void
+  style?: CSSProperties
+}
+
+export default function IdeaCard({ idea, onUpdateStatus, style }: Props) {
   const date = new Date(idea.created_at).toLocaleDateString()
 
   return (
