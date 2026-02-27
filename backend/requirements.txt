@@ -1,12 +1,6 @@
 fastapi
 uvicorn
 sqlmodel
-playwright
-beautifulsoup4
 openai
 python-dotenv
 requests
-# Additional integrations (LangChain placeholder)
-# langchain
-# langchain-community
-# langchain-openai

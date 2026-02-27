@@ -1,19 +1,19 @@
-import json
 import asyncio
 import requests
-from sqlmodel import Session
+from sqlalchemy import Engine
+from sqlmodel import Session, select
 from models import Idea
 from ai_processor import evaluate_idea
+
+REQUEST_TIMEOUT = 10  # seconds
 
 def fetch_hn_ask_stories(topic: str = None):
     """Fetch Ask HN stories. If topic is provided, use Algolia search, else get recent."""
     try:
         stories = []
         if topic:
-            # Algolia Search API for Hacker News
-            # Filter by Ask HN and the specific query
             url = f"https://hn.algolia.com/api/v1/search?query={topic}&tags=ask_hn"
-            response = requests.get(url)
+            response = requests.get(url, timeout=REQUEST_TIMEOUT)
             hits = response.json().get("hits", [])
             for hit in hits[:30]:
                 if hit.get("title") and hit.get("story_text"):
@@ -23,15 +23,17 @@ def fetch_hn_ask_stories(topic: str = None):
                         "text": hit.get("story_text")
                     })
         else:
-            # Get latest ask stories
-            response = requests.get("https://hacker-news.firebaseio.com/v0/askstories.json")
+            response = requests.get(
+                "https://hacker-news.firebaseio.com/v0/askstories.json",
+                timeout=REQUEST_TIMEOUT,
+            )
             story_ids = response.json()
-            
-            # Fetch top 15 to avoid excessive API calls
             for sid in story_ids[:15]:
-                story_resp = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{sid}.json")
+                story_resp = requests.get(
+                    f"https://hacker-news.firebaseio.com/v0/item/{sid}.json",
+                    timeout=REQUEST_TIMEOUT,
+                )
                 story = story_resp.json()
-                # Only process stories that have text (some are just titles)
                 if story and story.get("title") and story.get("text"):
                     stories.append(story)
         return stories
@@ -42,20 +44,15 @@ def fetch_hn_ask_stories(topic: str = None):
 async def process_stories(session: Session, stories, topic: str = None):
     for story in stories:
         url = f"https://news.ycombinator.com/item?id={story['id']}"
-        
-        # Check if already exists in DB
-        from sqlmodel import select
+
         statement = select(Idea).where(Idea.source_url == url)
         existing = session.exec(statement).first()
-        
         if existing:
             continue
-            
+
         print(f"Evaluating: {story.get('title')}")
-        # Evaluate with AI, passing the topic
         evaluation = await evaluate_idea(story.get("text", ""), story.get("title", ""), url, topic=topic)
-        
-        # If the AI thinks it's an idea (or fallback mechanism applies)
+
         if evaluation.get("is_idea", False) and evaluation.get("score", 0) > 40:
             idea = Idea(
                 title=story.get("title"),
@@ -70,34 +67,27 @@ async def process_stories(session: Session, stories, topic: str = None):
             session.commit()
             print(f"Added new idea: {idea.title} with score {idea.score}")
 
-async def run_scraper_async(session: Session, topic: str = None):
+async def run_scraper_async(engine: Engine, topic: str = None):
     print(f"Starting Hacker News Scraper... Topic: {topic if topic else 'General'}")
     stories = fetch_hn_ask_stories(topic=topic)
     if not stories:
         print("No stories found.")
         return
-    await process_stories(session, stories, topic=topic)
+    # Own session so it's not tied to the HTTP request lifecycle
+    with Session(engine) as session:
+        await process_stories(session, stories, topic=topic)
     print("Scraping completed.")
 
-def run_all_scrapers(session: Session, topic: str = None):
-    """Entry point for background tasks"""
-    # Create a new event loop for the background thread if necessary
+def run_all_scrapers(engine: Engine, topic: str = None):
+    """Entry point for background tasks — always creates a fresh event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    loop.run_until_complete(run_scraper_async(session, topic=topic))
+        loop.run_until_complete(run_scraper_async(engine, topic=topic))
+    finally:
+        loop.close()
 
 if __name__ == "__main__":
-    # For manual testing
-    from database import get_session, create_db_and_tables
+    from database import engine as db_engine, create_db_and_tables
     create_db_and_tables()
-    # get a session
-    gen = get_session()
-    sess = next(gen)
-    try:
-        run_all_scrapers(sess)
-    finally:
-        sess.close()
+    run_all_scrapers(db_engine)
